@@ -944,56 +944,66 @@ class VimeoIE(VimeoBaseInfoExtractor):
         if 'Referer' not in headers:
             headers['Referer'] = url
 
-        # Extract ID from URL
-        mobj = self._match_valid_url(url).groupdict()
-        video_id, unlisted_hash = mobj['id'], mobj.get('unlisted_hash')
-        if unlisted_hash:
-            return self._extract_from_api(video_id, unlisted_hash)
-
-        if any(p in url for p in ('play_redirect_hls', 'moogaloop.swf')):
-            url = 'https://vimeo.com/' + video_id
-
-        self._try_album_password(url)
-        is_secure = urllib.parse.urlparse(url).scheme == 'https'
-        try:
-            # Retrieve video webpage to extract further information
-            webpage, urlh = self._download_webpage_handle(
-                url, video_id, headers=headers, impersonate=is_secure)
-            redirect_url = urlh.url
-        except ExtractorError as error:
-            if not isinstance(error.cause, HTTPError) or error.cause.status not in (403, 429):
-                raise
-            errmsg = error.cause.response.read()
-            if b'Because of its privacy settings, this video cannot be played here' in errmsg:
+        
+        cc_license = None
+        timestamp = None
+        video_description = None
+        info_dict = {}
+        config_url = None
+        
+        if '://player.vimeo.com/video/' in url and 'config?' in url:
+            config_url = url
+        else:
+            # Extract ID from URL
+            mobj = self._match_valid_url(url).groupdict()
+            video_id, unlisted_hash = mobj['id'], mobj.get('unlisted_hash')
+            if unlisted_hash:
+                return self._extract_from_api(video_id, unlisted_hash)
+    
+            if any(p in url for p in ('play_redirect_hls', 'moogaloop.swf')):
+                url = 'https://vimeo.com/' + video_id
+    
+            self._try_album_password(url)
+            is_secure = urllib.parse.urlparse(url).scheme == 'https'
+            try:
+                # Retrieve video webpage to extract further information
+                webpage, urlh = self._download_webpage_handle(
+                    url, video_id, headers=headers, impersonate=is_secure)
+                redirect_url = urlh.url
+            except ExtractorError as error:
+                if not isinstance(error.cause, HTTPError) or error.cause.status not in (403, 429):
+                    raise
+                errmsg = error.cause.response.read()
+                if b'Because of its privacy settings, this video cannot be played here' in errmsg:
+                    raise ExtractorError(
+                        'Cannot download embed-only video without embedding URL. Please call yt-dlp '
+                        'with the URL of the page that embeds this video.', expected=True)
+                # 403 == vimeo.com TLS fingerprint or DC IP block; 429 == player.vimeo.com TLS FP block
+                status = error.cause.status
+                dcip_msg = 'If you are using a data center IP or VPN/proxy, your IP may be blocked'
+                if target := error.cause.response.extensions.get('impersonate'):
+                    raise ExtractorError(
+                        f'Got HTTP Error {status} when using impersonate target "{target}". {dcip_msg}')
+                elif not is_secure:
+                    raise ExtractorError(f'Got HTTP Error {status}. {dcip_msg}', expected=True)
                 raise ExtractorError(
-                    'Cannot download embed-only video without embedding URL. Please call yt-dlp '
-                    'with the URL of the page that embeds this video.', expected=True)
-            # 403 == vimeo.com TLS fingerprint or DC IP block; 429 == player.vimeo.com TLS FP block
-            status = error.cause.status
-            dcip_msg = 'If you are using a data center IP or VPN/proxy, your IP may be blocked'
-            if target := error.cause.response.extensions.get('impersonate'):
-                raise ExtractorError(
-                    f'Got HTTP Error {status} when using impersonate target "{target}". {dcip_msg}')
-            elif not is_secure:
-                raise ExtractorError(f'Got HTTP Error {status}. {dcip_msg}', expected=True)
-            raise ExtractorError(
-                'This request has been blocked due to its TLS fingerprint. Install a '
-                'required impersonation dependency if possible, or else if you are okay with '
-                f'{self._downloader._format_err("compromising your security/cookies", "light red")}, '
-                f'try replacing "https:" with "http:" in the input URL. {dcip_msg}.', expected=True)
-
-        if '://player.vimeo.com/video/' in url:
-            config = self._search_json(
-                r'\b(?:playerC|c)onfig\s*=', webpage, 'info section', video_id)
-            if config.get('view') == 4:
-                config = self._verify_player_video_password(
-                    redirect_url, video_id, headers)
-            info = self._parse_config(config, video_id)
-            source_format = self._extract_original_format(
-                f'https://vimeo.com/{video_id}', video_id, unlisted_hash)
-            if source_format:
-                info['formats'].append(source_format)
-            return info
+                    'This request has been blocked due to its TLS fingerprint. Install a '
+                    'required impersonation dependency if possible, or else if you are okay with '
+                    f'{self._downloader._format_err("compromising your security/cookies", "light red")}, '
+                    f'try replacing "https:" with "http:" in the input URL. {dcip_msg}.', expected=True)
+    
+            if '://player.vimeo.com/video/' in url:
+                config = self._search_json(
+                    r'\b(?:playerC|c)onfig\s*=', webpage, 'info section', video_id)
+                if config.get('view') == 4:
+                    config = self._verify_player_video_password(
+                        redirect_url, video_id, headers)
+                info = self._parse_config(config, video_id)
+                source_format = self._extract_original_format(
+                    f'https://vimeo.com/{video_id}', video_id, unlisted_hash)
+                if source_format:
+                    info['formats'].append(source_format)
+                return info
 
         vimeo_config = self._extract_vimeo_config(webpage, video_id, default=None)
         if vimeo_config:
@@ -1003,11 +1013,6 @@ class VimeoIE(VimeoBaseInfoExtractor):
                     '{} said: {}'.format(self.IE_NAME, seed_status['title']),
                     expected=True)
 
-        cc_license = None
-        timestamp = None
-        video_description = None
-        info_dict = {}
-        config_url = None
 
         channel_id = self._search_regex(
             r'vimeo\.com/channels/([^/]+)', url, 'channel id', default=None)
